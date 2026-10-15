@@ -4,25 +4,28 @@ import string
 import requests
 from getpass import getpass
 
-# API de la biblioteca
+# Dirección de la API de la biblioteca
 BASE_URL = "http://library.demo.local/api/v1/books"
-HEADERS = {"Accept": "application/json"}
+
 
 def generar_isbn():
-    """Genera un ISBN-13 con dígito de control válido."""
-    primeros = "978" + "".join(
+    """Genera un ISBN-13 con dígito de control."""
+    base = "978" + "".join(
         random.choices(string.digits, k=9)
     )
+
     suma = sum(
-        int(digito) * (1 if i % 2 == 0 else 3)
-        for i, digito in enumerate(primeros)
+        int(digito) * (1 if posicion % 2 == 0 else 3)
+        for posicion, digito in enumerate(base)
     )
+
     control = (10 - suma % 10) % 10
-    return primeros + str(control)
+    return base + str(control)
 
 
 def generar_libro(libro_id):
-    """Genera un libro con datos aleatorios."""
+    """Genera los datos aleatorios de un libro."""
+
     titulos = [
         "Fundamentos de redes",
         "Python para principiantes",
@@ -46,59 +49,84 @@ def generar_libro(libro_id):
         "Soto", "Contreras", "Silva", "Martínez", "López"
     ]
 
-    titulo = random.choice(titulos) + " " + str(
-        random.randint(1, 999)
-    )
-    autor = random.choice(nombres) + " " + random.choice(apellidos)
-
     return {
         "id": libro_id,
-        "title": titulo,
-        "author": autor,
+        "title": random.choice(titulos) + " " +
+                 str(random.randint(1, 999)),
+        "author": random.choice(nombres) + " " +
+                  random.choice(apellidos),
         "isbn": generar_isbn()
     }
 
 
-def main():
-    print("=== GENERADOR DE 50 LIBROS ===")
-    token = getpass("Ingresa tu token X-API-KEY: ").strip()
+def consultar_libros(token):
+    """Consulta los libros mediante GET."""
 
-    if not token:
-        print("Error: debes ingresar el token.")
-        return
-
-    headers = {
-        **HEADERS,
-        "X-API-KEY": token,
-        "Content-Type": "application/json"
-    }
-
-    # Consultar los libros actuales para evitar reutilizar IDs
     try:
         respuesta = requests.get(
             BASE_URL,
-            params={"includeISBN": "true"},
-            headers=headers,
+            headers={"X-API-KEY": token},
             timeout=20
         )
-        respuesta.raise_for_status()
+
+        print("Estado HTTP:", respuesta.status_code)
+
+        if respuesta.status_code != 200:
+            print("Detalle del error:", respuesta.text)
+            return None
+
         libros = respuesta.json()
 
         if not isinstance(libros, list):
             print("La API no devolvió una lista de libros.")
-            return
+            print(respuesta.text)
+            return None
 
-        ids = [
-            libro["id"] for libro in libros
-            if isinstance(libro.get("id"), int)
-        ]
-        siguiente_id = max(ids, default=-1) + 1
+        return libros
 
     except requests.RequestException as error:
-        print(f"No se pudo consultar la API: {error}")
+        print("Error de conexión:", error)
+        return None
+
+    except ValueError as error:
+        print("Error al interpretar la respuesta JSON:", error)
+        return None
+
+
+def main():
+    print("=== GENERADOR DE 50 LIBROS ===")
+
+    token = getpass("Ingresa tu token X-API-KEY: ").strip()
+
+    if not token:
+        print("Debes ingresar el token.")
         return
 
+    # Consultar los libros existentes antes de crear registros.
+    libros_existentes = consultar_libros(token)
+
+    if libros_existentes is None:
+        print("La consulta inicial falló. No se crearán libros.")
+        return
+
+    print("Libros existentes:", len(libros_existentes))
+
+    ids = [
+        libro["id"] for libro in libros_existentes
+        if isinstance(libro.get("id"), int)
+    ]
+
+    siguiente_id = max(ids, default=-1) + 1
+
+    headers = {
+        "X-API-KEY": token,
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+    }
+
     creados = 0
+
+    print("\n=== CREACIÓN DE LIBROS ===")
 
     for numero in range(50):
         libro = generar_libro(siguiente_id + numero)
@@ -106,62 +134,58 @@ def main():
         try:
             respuesta = requests.post(
                 BASE_URL,
-                json=libro,
                 headers=headers,
+                json=libro,
                 timeout=20
             )
 
             if respuesta.status_code in (200, 201):
                 creados += 1
                 print(
-                    f"[OK] {creados}/50: "
-                    f"{libro['title']} - {libro['author']} "
-                    f"- ISBN {libro['isbn']}"
-                )
-            else:
-                print(
-                    f"[ERROR] ID {libro['id']}: "
-                    f"HTTP {respuesta.status_code} - "
-                    f"{respuesta.text}"
+                    f"[OK] {creados}/50 | "
+                    f"ID: {libro['id']} | "
+                    f"Título: {libro['title']} | "
+                    f"Autor: {libro['author']} | "
+                    f"ISBN generado: {libro['isbn']}"
                 )
 
+            else:
+                print(
+                    f"[ERROR] HTTP {respuesta.status_code} "
+                    f"al crear el libro ID {libro['id']}"
+                )
+                print("Respuesta:", respuesta.text)
+
+                # Detenerse para evitar más errores consecutivos.
+                break
+
         except requests.RequestException as error:
-            print(f"Error al enviar el libro {libro['id']}: {error}")
+            print("Error de conexión al crear el libro:", error)
+            break
 
     print(f"\nLibros creados correctamente: {creados} de 50")
 
-    # Listar el catálogo completo, incluyendo ISBN
-    print("\n=== CATÁLOGO COMPLETO DE LIBROS ===")
+    # Mostrar el catálogo final.
+    print("\n=== CATÁLOGO FINAL ===")
 
-    try:
-        respuesta = requests.get(
-            BASE_URL,
-            params={
-                "includeISBN": "true",
-                "sortBy": "author"
-            },
-            headers=headers,
-            timeout=20
+    catalogo = consultar_libros(token)
+
+    if catalogo is None:
+        print("No se pudo recuperar el catálogo final.")
+        return
+
+    for libro in sorted(
+        catalogo,
+        key=lambda elemento: str(elemento.get("author", "")).lower()
+    ):
+        print(
+            f"ID: {libro.get('id')} | "
+            f"Título: {libro.get('title')} | "
+            f"Autor: {libro.get('author')} | "
+            f"ISBN: {libro.get('isbn', 'No informado')}"
         )
-        respuesta.raise_for_status()
 
-        catalogo = respuesta.json()
-
-        if isinstance(catalogo, list):
-            for libro in catalogo:
-                print(
-                    f"ID: {libro.get('id')} | "
-                    f"Título: {libro.get('title')} | "
-                    f"Autor: {libro.get('author')} | "
-                    f"ISBN: {libro.get('isbn', 'No informado')}"
-                )
-
-            print(f"\nTotal de libros listados: {len(catalogo)}")
-        else:
-            print("La respuesta no contiene una lista de libros.")
-
-    except requests.RequestException as error:
-        print(f"No se pudo listar el catálogo: {error}")
+    print("\nTotal de libros listados:", len(catalogo))
 
 
 if __name__ == "__main__":
